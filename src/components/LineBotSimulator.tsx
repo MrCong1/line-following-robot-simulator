@@ -62,6 +62,7 @@ const SEARCH_PWM_DELTA = 55;
 const TRAIL_SIZE = 240;
 const CONTROL_AGGRESSIVENESS = 1.12;
 const KP_OSCILLATION_START = 28;
+const KD_OSCILLATION_START = 45;
 
 const initialTelemetry: Telemetry = {
   error: 0,
@@ -126,6 +127,10 @@ function clamp(value: number, min: number, max: number) {
 
 function highKpFactor(kp: number) {
   return clamp((kp - KP_OSCILLATION_START) / (100 - KP_OSCILLATION_START), 0, 1);
+}
+
+function highKdFactor(kd: number) {
+  return clamp((kd - KD_OSCILLATION_START) / (100 - KD_OSCILLATION_START), 0, 1);
 }
 
 function makeRobot(track: TrackName): RobotState {
@@ -557,21 +562,24 @@ export function LineBotSimulator() {
       robot.integral = lost ? robot.integral * 0.96 : clamp(robot.integral + error * dt, -25, 25);
 
       const kpInstability = highKpFactor(paramsRef.current.kp);
+      const kdInstability = highKdFactor(paramsRef.current.kd);
+      const derivativeDelta = error - robot.lastError;
       const pTerm = paramsRef.current.kp * error;
       const iTerm = paramsRef.current.ki * robot.integral;
-      const dTerm = paramsRef.current.kd * (error - robot.lastError);
-      const correction = (pTerm + iTerm + dTerm) * (CONTROL_AGGRESSIVENESS + kpInstability * 0.55);
+      const dTerm = paramsRef.current.kd * derivativeDelta * (1 + kdInstability * 1.25);
+      const quantizationChatter = Math.sin((robot.x + robot.y) * 0.42) * kdInstability * paramsRef.current.kd * 0.5;
+      const correction = (pTerm + iTerm + dTerm + quantizationChatter) * (CONTROL_AGGRESSIVENESS + kpInstability * 0.55 + kdInstability * 0.32);
       robot.lastError = error;
 
       const { leftPwm, rightPwm } = motorMix(paramsRef.current.speed, correction, lost, robot.lastDirection);
-      const motorResponseTime = MOTOR_RESPONSE_TIME + kpInstability * 0.09;
+      const motorResponseTime = MOTOR_RESPONSE_TIME + kpInstability * 0.09 + kdInstability * 0.045;
       const motorAlpha = clamp(dt / motorResponseTime, 0, 1);
       robot.leftVelocity += (pwmToWheelSpeed(leftPwm) - robot.leftVelocity) * motorAlpha;
       robot.rightVelocity += (pwmToWheelSpeed(rightPwm) - robot.rightVelocity) * motorAlpha;
       const speed = (robot.leftVelocity + robot.rightVelocity) / 2;
-      const steeringGain = 1 + kpInstability * 2.4;
+      const steeringGain = 1 + kpInstability * 2.4 + kdInstability * 1.35;
       const targetYawRate = ((robot.leftVelocity - robot.rightVelocity) / SIM_WHEEL_BASE) * steeringGain;
-      const yawResponseTime = 0.018 + kpInstability * 0.11;
+      const yawResponseTime = 0.018 + kpInstability * 0.11 + kdInstability * 0.07;
       robot.yawRate += (targetYawRate - robot.yawRate) * clamp(dt / yawResponseTime, 0, 1);
       robot.angle += robot.yawRate * dt;
       robot.x += Math.cos(robot.angle) * speed * dt;
@@ -821,6 +829,10 @@ export function LineBotSimulator() {
               <div>
                 <dt>High Kp behavior</dt>
                 <dd>Large Kp creates stronger steering, so the robot may overshoot and zig-zag around the line.</dd>
+              </div>
+              <div>
+                <dt>High Kd behavior</dt>
+                <dd>Large Kd amplifies sudden digital sensor changes, causing PWM spikes and visible steering jitter.</dd>
               </div>
             </dl>
           </article>
